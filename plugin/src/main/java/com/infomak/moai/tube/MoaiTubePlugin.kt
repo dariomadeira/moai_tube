@@ -360,7 +360,7 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.5"
+        const val PLUGIN_VERSION = "1.0.6"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.

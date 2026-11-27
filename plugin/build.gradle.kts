@@ -111,9 +111,9 @@ dependencies {
     aarDeps("androidx.preference:preference:1.1.0@aar")
     aarDeps("androidx.appcompat:appcompat:1.2.0@aar")
 
-    // Autocontenido para release con R8: el host Moai3 puede recortar gson/kotlin-stdlib.
+    // Autocontenido para release con R8: el host Moai3 puede recortar gson/kotlin-stdlib/coroutines.
     implementation("com.google.code.gson:gson:2.10.1")
-    compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
 
 // Exponemos classes.jar de j2v8 y rxandroid para compilar sin AGP.
@@ -258,10 +258,9 @@ tasks.register("packagePlugin") {
 
         // Sólo excluimos `contract` (debe venir del ClassLoader del host para
         // compartir identidad de IYouTubePlugin) y anotaciones compile-only.
-        // kotlin-stdlib y gson se empaquetan en plugin.dex para sobrevivir a R8
-        // en builds release de Moai3.
+        // kotlin-stdlib, kotlinx-coroutines y gson se empaquetan en plugin.dex
+        // para sobrevivir a R8 en builds release de Moai3.
         val hostProvidedPrefixes = listOf(
-            "kotlinx-coroutines",
             "annotations-",
             "contract",
         )
@@ -311,6 +310,8 @@ tasks.register("packagePlugin") {
                 -keep class com.jayway.jsonpath.** { *; }
                 -keep class androidx.webkit.** { *; }
                 -keep class org.chromium.support_lib_boundary.** { *; }
+                -keep class kotlinx.coroutines.android.** { *; }
+                -keep class kotlinx.coroutines.internal.MainDispatcherFactory { *; }
                 -keepclasseswithmembers class * {
                     native <methods>;
                 }
