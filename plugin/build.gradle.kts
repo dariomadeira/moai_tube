@@ -96,8 +96,8 @@ dependencies {
     aarDeps("androidx.preference:preference:1.1.0@aar")
     aarDeps("androidx.appcompat:appcompat:1.2.0@aar")
 
-    // Ya provistos por el host Moai3 (compileOnly para evitar duplicados en plugin.dex)
-    compileOnly("com.google.code.gson:gson:2.10.1")
+    // Autocontenido para release con R8: el host Moai3 puede recortar gson/kotlin-stdlib.
+    implementation("com.google.code.gson:gson:2.10.1")
     compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
 
@@ -188,10 +188,12 @@ tasks.register("packagePlugin") {
 
         localAarJars.filter { it.name != "youtubeapi.jar" }.forEach { dexInputs.add(it) }
 
+        // Sólo excluimos `contract` (debe venir del ClassLoader del host para
+        // compartir identidad de IYouTubePlugin) y anotaciones compile-only.
+        // kotlin-stdlib y gson se empaquetan en plugin.dex para sobrevivir a R8
+        // en builds release de Moai3.
         val hostProvidedPrefixes = listOf(
-            "kotlin-stdlib",
             "kotlinx-coroutines",
-            "gson-",
             "annotations-",
             "contract",
         )
@@ -214,21 +216,66 @@ tasks.register("packagePlugin") {
             bundleExternalPrefixes.any { f.name.startsWith(it) }
         }?.forEach { dexInputs.add(it) }
 
-        // 3) Ejecutar d8 -> dist/plugin.dex (con --min-api 26 igual que Moai3)
+        // 3) Ejecutar R8 (tree-shaking sin ofuscar) -> dist/plugin.dex único
+        // (con --min-api 26 igual que Moai3). Así incluimos kotlin-stdlib y gson
+        // autocontenidos sin superar el límite de 65k métodos de un único DEX.
+        val d8Jar = file("$androidSdkDir/build-tools/$androidBuildTools/lib/d8.jar")
+        require(d8Jar.isFile) { "No se encontró d8.jar en: ${d8Jar.absolutePath}" }
+        val javaBin = File(System.getProperty("java.home"), "bin/" +
+            if (System.getProperty("os.name").lowercase().contains("win")) "java.exe" else "java")
+
+        val r8Rules = File(workDir, "r8-plugin.pro").apply {
+            writeText(
+                """
+                -dontobfuscate
+                -dontoptimize
+                -dontwarn **
+                -ignorewarnings
+                -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,Exceptions
+                -keep class com.infomak.moai.tube.** { *; }
+                -keep class com.liskovsoft.** { *; }
+                -keep class com.eclipsesource.v8.** { *; }
+                -keep class retrofit2.** { *; }
+                -keep class com.google.gson.** { *; }
+                -keep class com.jayway.jsonpath.** { *; }
+                -keep class androidx.webkit.** { *; }
+                -keep class org.chromium.support_lib_boundary.** { *; }
+                -keepclasseswithmembers class * {
+                    native <methods>;
+                }
+                """.trimIndent(),
+            )
+        }
+
         val d8OutDir = File(workDir, "dex-out").apply { mkdirs() }
         val cmd = mutableListOf(
-            d8Bin.absolutePath,
+            javaBin.absolutePath,
+            "-Xmx2g",
+            "-cp", d8Jar.absolutePath,
+            "com.android.tools.r8.R8",
             "--release",
             "--min-api", "26",
             "--lib", androidJar.absolutePath,
+            "--pg-conf", r8Rules.absolutePath,
             "--output", d8OutDir.absolutePath,
         )
+        // Pasar contract.jar como --lib (lo provee el host Moai3).
+        project(":contract").tasks.named<Jar>("jar").get().archiveFile.get().asFile
+            .takeIf { it.isFile }
+            ?.let { cmd.addAll(listOf("--lib", it.absolutePath)) }
         dexInputs.forEach { cmd.add(it.absolutePath) }
 
-        logger.lifecycle("Ejecutando d8 con ${dexInputs.size} jars...")
-        val proc = ProcessBuilder(cmd).inheritIO().start()
+        logger.lifecycle("Ejecutando R8 con ${dexInputs.size} jars...")
+        val r8Log = File(workDir, "r8.log")
+        val proc = ProcessBuilder(cmd)
+            .redirectErrorStream(true)
+            .redirectOutput(r8Log)
+            .start()
         val exitCode = proc.waitFor()
-        require(exitCode == 0) { "d8 falló con exit code $exitCode" }
+        if (exitCode != 0) {
+            logger.error(r8Log.readText())
+        }
+        require(exitCode == 0) { "R8 falló con exit code $exitCode" }
 
         val dexFiles = d8OutDir.listFiles { f -> f.extension == "dex" }?.sortedBy { it.name }.orEmpty()
         require(dexFiles.size == 1) {
