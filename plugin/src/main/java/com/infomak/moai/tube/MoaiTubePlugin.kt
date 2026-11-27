@@ -9,7 +9,10 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaItem
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager
+import com.liskovsoft.youtubeapi.service.data.YouTubeMediaItemFormatInfo
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData
+import com.liskovsoft.youtubeapi.videoinfo.V2.VideoInfoService
+import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -35,6 +38,26 @@ class MoaiTubePlugin : IYouTubePlugin {
     @Volatile
     private var initialized = false
 
+    @Volatile
+    private var preferredClientName: String? = null
+
+    private val appClientClass: Class<*> by lazy {
+        Class.forName("com.liskovsoft.youtubeapi.common.helpers.AppClient")
+    }
+
+    private val appClientValueOf by lazy {
+        appClientClass.getMethod("valueOf", String::class.java)
+    }
+
+    private val getVideoInfoMethod by lazy {
+        VideoInfoService::class.java.getMethod(
+            "getVideoInfo",
+            appClientClass,
+            String::class.java,
+            String::class.java,
+        )
+    }
+
     override fun pluginVersion(): String = PLUGIN_VERSION
 
     override fun init(context: Context, pluginDir: File) {
@@ -43,62 +66,58 @@ class MoaiTubePlugin : IYouTubePlugin {
         PluginAssets.pluginDir = pluginDir
         GlobalPreferences.instance(app)
 
-        // Activar HLS extendido (VISIONOS) y arrancar en TV_SAMSUNG (índice 1),
-        // que entrega DASH adaptativo en HD en vez de SABR-only.
         val data = MediaServiceData.instance()
         data.setFormatEnabled(MediaServiceData.FORMATS_EXTENDED_HLS, true)
-        if (data.clientType < 0) {
-            data.clientType = CLIENT_TV_SAMSUNG
-        }
         initialized = true
         Log.i(TAG, "MoaiTubePlugin v$PLUGIN_VERSION listo (pluginDir=${pluginDir.absolutePath})")
     }
 
     override fun resolve(videoId: String): String {
         val ctx = requireContext()
-        val mediaItemService = YouTubeServiceManager.instance().mediaItemService
-        val data = MediaServiceData.instance()
+        val videoInfoService = VideoInfoService.instance()
 
         var bestInfo: MediaItemFormatInfo? = null
-        val tried = mutableSetOf<Int>()
-
-        // 1) Probar primero el cliente actual; si sólo trae SABR/360p, rotar por
-        // los clientes conocidos que entregan DASH o HLS en HD para Media3.
         val order = buildList {
-            val current = data.clientType
-            if (current >= 0) add(current)
-            for (idx in HD_CLIENT_PRIORITY) {
-                if (idx !in this) add(idx)
+            preferredClientName?.let { add(it) }
+            for (name in HD_CLIENTS) {
+                if (name !in this) add(name)
             }
         }
 
-        for (clientIdx in order) {
-            if (!tried.add(clientIdx)) continue
+        for (clientName in order) {
             try {
-                if (data.clientType != clientIdx) {
-                    data.clientType = clientIdx
-                    // setFormatEnabled también invalida la caché interna de FormatInfoWrapper.
-                    data.setFormatEnabled(MediaServiceData.FORMATS_EXTENDED_HLS, true)
-                }
-                val info = mediaItemService.getFormatInfo(videoId) ?: continue
+                val clientObj = appClientValueOf.invoke(null, clientName) ?: continue
+                val videoInfo = getVideoInfoMethod.invoke(
+                    videoInfoService,
+                    clientObj,
+                    videoId,
+                    null,
+                ) as? VideoInfo ?: continue
+                val info = YouTubeMediaItemFormatInfo.from(videoInfo) ?: continue
                 if (info.isUnplayable) {
-                    Log.w(TAG, "resolve($videoId) client#$clientIdx unplayable: ${info.playabilityReason}")
+                    Log.w(TAG, "resolve($videoId) $clientName unplayable: ${info.playabilityReason}")
                     if (bestInfo == null) bestInfo = info
                     continue
                 }
-                val hasHd = info.containsDashFormats() || info.containsHlsUrl()
+                val hasDash = info.containsDashFormats()
+                val hasHls = info.containsHlsUrl()
                 Log.i(
                     TAG,
-                    "resolve($videoId) client#$clientIdx (${info.clientInfo?.clientName}): " +
-                        "dash=${info.containsDashFormats()} hls=${info.containsHlsUrl()} " +
-                        "sabr=${info.containsSabrFormats()} url=${info.containsUrlFormats()}",
+                    "resolve($videoId) $clientName (${info.clientInfo?.clientName}): " +
+                        "dash=$hasDash hls=$hasHls sabr=${info.containsSabrFormats()} " +
+                        "url=${info.containsUrlFormats()} adapt=${info.adaptiveFormats?.size ?: 0}",
                 )
-                bestInfo = info
-                if (hasHd) {
+                if (hasDash || hasHls) {
+                    bestInfo = info
+                    preferredClientName = clientName
                     break
                 }
+                if (bestInfo == null || bestInfo.isUnplayable) {
+                    bestInfo = info
+                }
             } catch (t: Throwable) {
-                Log.w(TAG, "resolve($videoId) client#$clientIdx falló: ${t.message}")
+                val cause = t.cause ?: t
+                Log.w(TAG, "resolve($videoId) $clientName falló: ${cause.javaClass.simpleName}: ${cause.message}")
             }
         }
 
@@ -148,8 +167,9 @@ class MoaiTubePlugin : IYouTubePlugin {
             }
             if (file.isFile && file.length() > 0) {
                 val maxQuality = info.adaptiveFormats
-                    ?.mapNotNull { it.qualityLabel }
-                    ?.firstOrNull { it.isNotBlank() }
+                    ?.filter { !it.qualityLabel.isNullOrBlank() }
+                    ?.maxByOrNull { it.height }
+                    ?.qualityLabel
                     ?: "HD"
                 return out
                     .put("url", "file://${file.absolutePath}")
@@ -322,22 +342,18 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.0"
+        const val PLUGIN_VERSION = "1.0.1"
 
-        // Índices de FormatInfoWrapper.CLIENT_LIST en MediaServiceCore:
-        // 0=TV (SABR), 1=TV_SAMSUNG (DASH), 3=VISIONOS (HLS), 4=TV_DOWNGRADED, 7=IOS, 10=ANDROID_VR
-        private const val CLIENT_TV_SAMSUNG = 1
-        private const val CLIENT_VISIONOS = 3
-        private const val CLIENT_TV_DOWNGRADED = 4
-        private const val CLIENT_IOS = 7
-        private const val CLIENT_ANDROID_VR = 10
-
-        private val HD_CLIENT_PRIORITY = listOf(
-            CLIENT_TV_SAMSUNG,
-            CLIENT_VISIONOS,
-            CLIENT_TV_DOWNGRADED,
-            CLIENT_IOS,
-            CLIENT_ANDROID_VR,
+        // Clientes de MediaServiceCore probados directo contra VideoInfoService
+        // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
+        private val HD_CLIENTS = listOf(
+            "ANDROID_VR",
+            "VISIONOS",
+            "IOS",
+            "TV_SAMSUNG",
+            "TV_DOWNGRADED",
+            "WEB_EMBED",
+            "TV",
         )
 
         private val DEFAULT_FALLBACK_QUERIES = listOf(

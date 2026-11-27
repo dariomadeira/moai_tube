@@ -208,6 +208,7 @@ tasks.register("packagePlugin") {
             "cronet-",
             "okhttpprofiler",
             "netcipher",
+            "webkit",
         )
         extDir.listFiles { f ->
             bundleExternalPrefixes.any { f.name.startsWith(it) }
@@ -225,9 +226,9 @@ tasks.register("packagePlugin") {
         dexInputs.forEach { cmd.add(it.absolutePath) }
 
         logger.lifecycle("Ejecutando d8 con ${dexInputs.size} jars...")
-        exec {
-            commandLine(cmd)
-        }
+        val proc = ProcessBuilder(cmd).inheritIO().start()
+        val exitCode = proc.waitFor()
+        require(exitCode == 0) { "d8 falló con exit code $exitCode" }
 
         val dexFiles = d8OutDir.listFiles { f -> f.extension == "dex" }?.sortedBy { it.name }.orEmpty()
         require(dexFiles.size == 1) {
