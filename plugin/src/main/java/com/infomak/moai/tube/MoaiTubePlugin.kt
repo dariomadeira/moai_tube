@@ -156,6 +156,7 @@ class MoaiTubePlugin : IYouTubePlugin {
             .put("client", clientName)
             .put("summary", summary)
             .put("headers", JSONObject().put("User-Agent", userAgent))
+            .put("subtitles", buildSubtitlesJson(info))
 
         if (info.isUnplayable) {
             return out.put("error", info.playabilityReason ?: "no se puede reproducir").toString()
@@ -355,12 +356,66 @@ class MoaiTubePlugin : IYouTubePlugin {
         return sdf.format(Date(epochMs))
     }
 
+    private fun buildSubtitlesJson(info: MediaItemFormatInfo): JSONArray {
+        val arr = JSONArray()
+        val subs = info.subtitles.orEmpty()
+        if (subs.isEmpty()) return arr
+
+        val seenKeys = HashSet<String>()
+        var hasSpanish = false
+        var translatableFallbackUrl: String? = null
+
+        for (sub in subs) {
+            val rawUrl = sub.baseUrl?.trim().orEmpty()
+            if (rawUrl.isEmpty()) continue
+            val vttUrl = ensureVttFormat(rawUrl)
+            val lang = sub.languageCode?.trim().orEmpty()
+            val name = sub.name?.trim().takeIf { !it.isNullOrEmpty() } ?: lang.ifEmpty { "Subtítulos" }
+            val key = "${lang.lowercase(Locale.US)}|${name.lowercase(Locale.US)}"
+            if (!seenKeys.add(key)) continue
+
+            if (lang.lowercase(Locale.US).startsWith("es")) {
+                hasSpanish = true
+            }
+            if (translatableFallbackUrl == null && sub.isTranslatable) {
+                translatableFallbackUrl = vttUrl
+            }
+            arr.put(
+                JSONObject()
+                    .put("name", name)
+                    .put("language", lang)
+                    .put("url", vttUrl)
+                    .put("mimeType", "text/vtt"),
+            )
+        }
+
+        // Si no hay pista en español pero alguna es traducible, ofrecer Español auto-traducido.
+        if (!hasSpanish && translatableFallbackUrl != null) {
+            val sep = if (translatableFallbackUrl.contains("?")) "&" else "?"
+            arr.put(
+                JSONObject()
+                    .put("name", "Español (traducido)")
+                    .put("language", "es")
+                    .put("url", "${translatableFallbackUrl}${sep}tlang=es")
+                    .put("mimeType", "text/vtt"),
+            )
+        }
+        return arr
+    }
+
+    private fun ensureVttFormat(url: String): String {
+        val cleaned = url.replace(Regex("([?&])fmt=[^&]*"), "$1fmt=vtt")
+        if (cleaned.contains("fmt=vtt")) return cleaned
+        val sep = if (cleaned.contains("?")) "&" else "?"
+        return "${cleaned}${sep}fmt=vtt"
+    }
+
     private fun errorJson(message: String): String =
         JSONObject().put("error", message).toString()
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.6"
+        const val PLUGIN_VERSION = "1.0.7"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
