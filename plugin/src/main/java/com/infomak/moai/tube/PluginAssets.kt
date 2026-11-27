@@ -1,6 +1,7 @@
 package com.infomak.moai.tube
 
 import android.content.Context
+import android.content.res.AssetManager
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
@@ -15,7 +16,11 @@ object PluginAssets {
     var pluginDir: File? = null
 
     @JvmStatic
-    fun open(context: Context, filename: String): InputStream {
+    fun open(context: Context, filename: String): InputStream =
+        openAsset(context.assets, filename)
+
+    @JvmStatic
+    fun openAsset(assets: AssetManager, filename: String): InputStream {
         val dir = pluginDir
         if (dir != null) {
             val localFile = File(File(dir, "assets"), filename)
@@ -23,6 +28,6 @@ object PluginAssets {
                 return FileInputStream(localFile)
             }
         }
-        return context.assets.open(filename)
+        return assets.open(filename)
     }
 }

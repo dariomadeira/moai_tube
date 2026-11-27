@@ -1,8 +1,22 @@
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes
 import java.io.File
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath("org.ow2.asm:asm:9.7")
+    }
+}
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -163,8 +177,11 @@ tasks.register("packagePlugin") {
         workDir.mkdirs()
 
         // 1) Preparar youtubeapi.jar sin el UtilsKt original (usamos el nuestro con PluginAssets)
+        //    y redirigiendo toda llamada a AssetManager.open(String) (p. ej. potokennp2/po_token2.html)
+        //    hacia PluginAssets.openAsset(AssetManager, String) para leer desde pluginDir/assets/.
         val patchedYoutubeApi = File(workDir, "youtubeapi-patched.jar")
         val origYoutubeApi = File(extractedAarsDir, "youtubeapi.jar")
+        var patchedAssetCalls = 0
         ZipFile(origYoutubeApi).use { zin ->
             ZipOutputStream(patchedYoutubeApi.outputStream()).use { zout ->
                 val entries = zin.entries()
@@ -176,11 +193,61 @@ tasks.register("packagePlugin") {
                         continue
                     }
                     zout.putNextEntry(ZipEntry(e.name))
-                    zin.getInputStream(e).use { it.copyTo(zout) }
+                    if (!e.isDirectory && e.name.endsWith(".class")) {
+                        val rawBytes = zin.getInputStream(e).readBytes()
+                        var modified = false
+                        val cr = ClassReader(rawBytes)
+                        val cw = ClassWriter(cr, 0)
+                        cr.accept(
+                            object : ClassVisitor(Opcodes.ASM9, cw) {
+                                override fun visitMethod(
+                                    access: Int,
+                                    name: String?,
+                                    descriptor: String?,
+                                    signature: String?,
+                                    exceptions: Array<out String>?,
+                                ): MethodVisitor {
+                                    val mv = super.visitMethod(access, name, descriptor, signature, exceptions)
+                                    return object : MethodVisitor(Opcodes.ASM9, mv) {
+                                        override fun visitMethodInsn(
+                                            opcode: Int,
+                                            owner: String?,
+                                            mName: String?,
+                                            mDesc: String?,
+                                            isInterface: Boolean,
+                                        ) {
+                                            if (opcode == Opcodes.INVOKEVIRTUAL &&
+                                                owner == "android/content/res/AssetManager" &&
+                                                mName == "open" &&
+                                                mDesc == "(Ljava/lang/String;)Ljava/io/InputStream;"
+                                            ) {
+                                                modified = true
+                                                patchedAssetCalls++
+                                                super.visitMethodInsn(
+                                                    Opcodes.INVOKESTATIC,
+                                                    "com/infomak/moai/tube/PluginAssets",
+                                                    "openAsset",
+                                                    "(Landroid/content/res/AssetManager;Ljava/lang/String;)Ljava/io/InputStream;",
+                                                    false,
+                                                )
+                                            } else {
+                                                super.visitMethodInsn(opcode, owner, mName, mDesc, isInterface)
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            0,
+                        )
+                        zout.write(if (modified) cw.toByteArray() else rawBytes)
+                    } else {
+                        zin.getInputStream(e).use { it.copyTo(zout) }
+                    }
                     zout.closeEntry()
                 }
             }
         }
+        logger.lifecycle("Parcheadas $patchedAssetCalls llamadas a AssetManager.open() -> PluginAssets.openAsset()")
 
         // 2) Recolectar todos los JARs a dexificar (excluyendo lo que ya trae el host Moai3)
         val dexInputs = mutableListOf<File>()
