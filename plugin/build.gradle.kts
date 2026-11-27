@@ -93,6 +93,7 @@ dependencies {
     aarDeps("org.chromium.net:cronet-api:105.5195.68@aar")
     aarDeps("com.localebro:okhttpprofiler:1.0.8@aar")
     aarDeps("androidx.webkit:webkit:1.11.0@aar")
+    aarDeps("androidx.core:core:1.13.1@aar")
     aarDeps("androidx.preference:preference:1.1.0@aar")
     aarDeps("androidx.appcompat:appcompat:1.2.0@aar")
 
@@ -211,6 +212,9 @@ tasks.register("packagePlugin") {
             "okhttpprofiler",
             "netcipher",
             "webkit",
+            "core-",
+            "preference",
+            "appcompat",
         )
         extDir.listFiles { f ->
             bundleExternalPrefixes.any { f.name.startsWith(it) }
