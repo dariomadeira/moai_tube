@@ -42,6 +42,8 @@ class MoaiTubePlugin : IYouTubePlugin {
     @Volatile
     private var preferredClientName: String? = null
 
+    private val channelCursors = java.util.concurrent.ConcurrentHashMap<String, MediaGroup>()
+
     private val appClientClass: Class<*> by lazy {
         Class.forName("com.liskovsoft.youtubeapi.common.helpers.AppClient")
     }
@@ -268,11 +270,91 @@ class MoaiTubePlugin : IYouTubePlugin {
     override fun channelVideos(channelId: String): String {
         requireContext()
         val content = YouTubeServiceManager.instance().contentService
-        val groups = content.getChannelObserve(channelId).blockingFirst(emptyList())
-        val rows = groupsToJson(groups.orEmpty())
+        val rawArg = channelId.trim()
+
+        // Paginación bajo demanda: "<channelId>|next" continúa el MediaGroup cacheado.
+        if (rawArg.endsWith("|next")) {
+            val cid = rawArg.removeSuffix("|next").trim()
+            val prev = channelCursors[cid]
+            if (prev == null || prev.nextPageKey.isNullOrEmpty()) {
+                channelCursors.remove(cid)
+                return JSONObject()
+                    .put("channelId", cid)
+                    .put("hasMore", false)
+                    .put("rows", JSONArray())
+                    .toString()
+            }
+            val next = runCatching { content.continueGroup(prev) }.getOrNull()
+            val hasMore = next != null && !next.nextPageKey.isNullOrEmpty() && !next.mediaItems.isNullOrEmpty()
+            if (hasMore && next != null) {
+                channelCursors[cid] = next
+            } else {
+                channelCursors.remove(cid)
+            }
+            return JSONObject()
+                .put("channelId", cid)
+                .put("hasMore", hasMore)
+                .put("rows", groupsToJson(listOfNotNull(next)))
+                .toString()
+        }
+
+        // Resolución del channelId real si el video original no lo traía ("video:<videoId>").
+        var actualChannelId = rawArg
+        var resolvedChannelName = ""
+        if (rawArg.startsWith("video:")) {
+            val vid = rawArg.removePrefix("video:").trim()
+            if (vid.isNotEmpty()) {
+                val meta = runCatching {
+                    YouTubeServiceManager.instance().mediaItemService.getMetadata(vid)
+                }.getOrNull()
+                actualChannelId = meta?.channelId?.trim().orEmpty()
+                resolvedChannelName = meta?.author?.trim().orEmpty()
+            } else {
+                actualChannelId = ""
+            }
+        }
+
+        if (actualChannelId.isEmpty()) {
+            return JSONObject()
+                .put("channelId", "")
+                .put("channelName", resolvedChannelName)
+                .put("hasMore", false)
+                .put("rows", JSONArray())
+                .toString()
+        }
+
+        // 1) Preferimos la pestaña completa de Videos del canal (getChannelSortingOptionsObserve),
+        //    que pagina todos los videos del canal con continueGroup().
+        val sortGroups = runCatching {
+            content.getChannelSortingOptionsObserve(actualChannelId).blockingFirst(emptyList())
+        }.getOrNull().orEmpty()
+        val uploadsGroup = sortGroups.firstOrNull { !it.mediaItems.isNullOrEmpty() }
+
+        val resultGroups: List<MediaGroup>
+        val cursorGroup: MediaGroup?
+        if (uploadsGroup != null) {
+            resultGroups = listOf(uploadsGroup)
+            cursorGroup = uploadsGroup
+        } else {
+            val fallback = runCatching {
+                content.getChannelObserve(actualChannelId).blockingFirst(emptyList())
+            }.getOrNull().orEmpty()
+            resultGroups = fallback
+            cursorGroup = fallback.firstOrNull { !it.nextPageKey.isNullOrEmpty() }
+        }
+
+        val hasMore = cursorGroup != null && !cursorGroup.nextPageKey.isNullOrEmpty()
+        if (hasMore && cursorGroup != null) {
+            channelCursors[actualChannelId] = cursorGroup
+        } else {
+            channelCursors.remove(actualChannelId)
+        }
+
         return JSONObject()
-            .put("channelId", channelId)
-            .put("rows", rows)
+            .put("channelId", actualChannelId)
+            .put("channelName", resolvedChannelName)
+            .put("hasMore", hasMore)
+            .put("rows", groupsToJson(resultGroups))
             .toString()
     }
 
@@ -422,7 +504,7 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.8"
+        const val PLUGIN_VERSION = "1.0.9"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
