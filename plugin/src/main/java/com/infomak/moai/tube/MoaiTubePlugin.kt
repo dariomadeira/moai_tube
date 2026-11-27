@@ -7,6 +7,7 @@ import com.liskovsoft.googlecommon.common.helpers.DefaultHeaders
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItem
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo
+import com.liskovsoft.mediaserviceinterfaces.data.SearchOptions
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager
 import com.liskovsoft.youtubeapi.service.data.YouTubeMediaItemFormatInfo
@@ -64,12 +65,20 @@ class MoaiTubePlugin : IYouTubePlugin {
         val app = context.applicationContext ?: context
         appContext = app
         PluginAssets.pluginDir = pluginDir
-        GlobalPreferences.instance(app)
+        val prefs = GlobalPreferences.instance(app)
+        val sysLocale = Locale.getDefault()
+        val country = if (sysLocale.language.equals("es", ignoreCase = true) && sysLocale.country.length == 2) {
+            sysLocale.country.uppercase(Locale.US)
+        } else {
+            "AR"
+        }
+        prefs.preferredLanguage = "es"
+        prefs.preferredCountry = country
 
         val data = MediaServiceData.instance()
         data.setFormatEnabled(MediaServiceData.FORMATS_EXTENDED_HLS, true)
         initialized = true
-        Log.i(TAG, "MoaiTubePlugin v$PLUGIN_VERSION listo (pluginDir=${pluginDir.absolutePath})")
+        Log.i(TAG, "MoaiTubePlugin v$PLUGIN_VERSION listo (hl=es gl=$country, pluginDir=${pluginDir.absolutePath})")
     }
 
     override fun resolve(videoId: String): String {
@@ -273,10 +282,19 @@ class MoaiTubePlugin : IYouTubePlugin {
         if (isEmpty(groups)) {
             val queries = fallbackQueries?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
                 ?: DEFAULT_FALLBACK_QUERIES
+            val todayTop = SearchOptions.UPLOAD_DATE_TODAY or SearchOptions.SORT_BY_VIEW_COUNT
+            val weekTop = SearchOptions.UPLOAD_DATE_THIS_WEEK or SearchOptions.SORT_BY_VIEW_COUNT
             groups = queries.mapNotNull { q ->
-                runCatching {
-                    content.getSearch(q)?.firstOrNull { !it.mediaItems.isNullOrEmpty() }
+                val todayGroup = runCatching {
+                    content.getSearch(q, todayTop)?.firstOrNull { !it.mediaItems.isNullOrEmpty() }
                 }.getOrNull()
+                if (todayGroup != null && (todayGroup.mediaItems?.size ?: 0) >= 6) {
+                    todayGroup
+                } else {
+                    runCatching {
+                        content.getSearch(q, weekTop)?.firstOrNull { !it.mediaItems.isNullOrEmpty() }
+                    }.getOrNull() ?: todayGroup
+                }
             }
         }
         return JSONObject()
@@ -342,7 +360,7 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.1"
+        const val PLUGIN_VERSION = "1.0.2"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
