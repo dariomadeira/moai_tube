@@ -116,12 +116,15 @@ class MoaiTubePlugin : IYouTubePlugin {
                         "dash=$hasDash hls=$hasHls sabr=${info.containsSabrFormats()} " +
                         "url=${info.containsUrlFormats()} adapt=${info.adaptiveFormats?.size ?: 0}",
                 )
-                if (hasDash || hasHls) {
+                if (hasHls) {
                     bestInfo = info
                     preferredClientName = clientName
                     break
                 }
-                if (bestInfo == null || bestInfo.isUnplayable) {
+                if (hasDash && (bestInfo == null || bestInfo.isUnplayable || !bestInfo.containsDashFormats())) {
+                    bestInfo = info
+                    preferredClientName = clientName
+                } else if (bestInfo == null || bestInfo.isUnplayable) {
                     bestInfo = info
                 }
             } catch (t: Throwable) {
@@ -162,11 +165,23 @@ class MoaiTubePlugin : IYouTubePlugin {
             return out.put("error", info.playabilityReason ?: "no se puede reproducir").toString()
         }
 
-        if (info.isLive && info.containsHlsUrl()) {
+        // Preferimos HLS (FORMATS_EXTENDED_HLS) sobre DASH: en YouTube 2025/2026
+        // los streams DASH de ANDROID_VR sin PoToken devuelven HTTP 403 a los 60 s,
+        // mientras que HLS reproduce videos largos completos en HD sin cortes.
+        if (info.containsHlsUrl()) {
+            val maxQuality = if (info.isLive) {
+                "live"
+            } else {
+                info.adaptiveFormats
+                    ?.filter { !it.qualityLabel.isNullOrBlank() }
+                    ?.maxByOrNull { it.height }
+                    ?.qualityLabel
+                    ?: "HD"
+            }
             return out
                 .put("url", info.hlsManifestUrl)
                 .put("kind", "hls")
-                .put("quality", "live")
+                .put("quality", maxQuality)
                 .toString()
         }
 
@@ -187,14 +202,6 @@ class MoaiTubePlugin : IYouTubePlugin {
                     .put("quality", maxQuality)
                     .toString()
             }
-        }
-
-        if (info.containsHlsUrl()) {
-            return out
-                .put("url", info.hlsManifestUrl)
-                .put("kind", "hls")
-                .put("quality", "HD")
-                .toString()
         }
 
         val direct = info.urlFormats?.firstOrNull { !it.url.isNullOrEmpty() }
@@ -415,7 +422,7 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.7"
+        const val PLUGIN_VERSION = "1.0.8"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
