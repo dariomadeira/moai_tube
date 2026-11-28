@@ -44,6 +44,10 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     private val channelCursors = java.util.concurrent.ConcurrentHashMap<String, MediaGroup>()
 
+    // AppClient (enum de MediaServiceCore) no está expuesto en los AAR como API
+    // pública, así que se resuelve por reflexión (cacheada). Si una versión
+    // futura del motor cambia el paquete o la firma de getVideoInfo, esto falla
+    // en runtime: revisar acá al actualizar los .aar de `libs/`.
     private val appClientClass: Class<*> by lazy {
         Class.forName("com.liskovsoft.youtubeapi.common.helpers.AppClient")
     }
@@ -504,7 +508,9 @@ class MoaiTubePlugin : IYouTubePlugin {
 
     companion object {
         private const val TAG = "MoaiTubePlugin"
-        const val PLUGIN_VERSION = "1.0.9"
+
+        /** Mantener sincronizado con `version` en `build.gradle.kts` (raíz). */
+        const val PLUGIN_VERSION = "1.0.10"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
