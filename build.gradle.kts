@@ -4,5 +4,5 @@ plugins {
 
 allprojects {
     group = "com.infomak.moai.tube"
-    version = "1.0.10"
+    version = "1.0.11"
 }

@@ -305,6 +305,7 @@ class MoaiTubePlugin : IYouTubePlugin {
         // Resolución del channelId real si el video original no lo traía ("video:<videoId>").
         var actualChannelId = rawArg
         var resolvedChannelName = ""
+        var channelAvatar = ""
         if (rawArg.startsWith("video:")) {
             val vid = rawArg.removePrefix("video:").trim()
             if (vid.isNotEmpty()) {
@@ -313,6 +314,7 @@ class MoaiTubePlugin : IYouTubePlugin {
                 }.getOrNull()
                 actualChannelId = meta?.channelId?.trim().orEmpty()
                 resolvedChannelName = meta?.author?.trim().orEmpty()
+                channelAvatar = meta?.authorImageUrl?.trim().orEmpty()
             } else {
                 actualChannelId = ""
             }
@@ -354,9 +356,25 @@ class MoaiTubePlugin : IYouTubePlugin {
             channelCursors.remove(actualChannelId)
         }
 
+        // Avatar del canal (logo del header): el metadata de cualquier video lo
+        // trae en authorImageUrl. Si no vino por "video:", lo pedimos del primer
+        // video del canal.
+        if (channelAvatar.isEmpty()) {
+            val firstVideoId = resultGroups.firstNotNullOfOrNull { g ->
+                g.mediaItems?.firstOrNull { !it.videoId.isNullOrEmpty() }?.videoId
+            }
+            if (!firstVideoId.isNullOrEmpty()) {
+                channelAvatar = runCatching {
+                    YouTubeServiceManager.instance().mediaItemService
+                        .getMetadata(firstVideoId)?.authorImageUrl?.trim().orEmpty()
+                }.getOrNull().orEmpty()
+            }
+        }
+
         return JSONObject()
             .put("channelId", actualChannelId)
             .put("channelName", resolvedChannelName)
+            .put("channelAvatar", channelAvatar)
             .put("hasMore", hasMore)
             .put("rows", groupsToJson(resultGroups))
             .toString()
@@ -510,7 +528,7 @@ class MoaiTubePlugin : IYouTubePlugin {
         private const val TAG = "MoaiTubePlugin"
 
         /** Mantener sincronizado con `version` en `build.gradle.kts` (raíz). */
-        const val PLUGIN_VERSION = "1.0.10"
+        const val PLUGIN_VERSION = "1.0.11"
 
         // Clientes de MediaServiceCore probados directo contra VideoInfoService
         // (sin pasar por la caché de FormatInfoWrapper) para obtener DASH/HLS HD.
